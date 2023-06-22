@@ -1,3 +1,5 @@
+# import os
+# CUDA_VISIBLE_DEVICES=0 python main_ddpir_sisr.py
 import os.path
 import cv2
 import logging
@@ -32,8 +34,8 @@ def main():
 
     noise_level_img         = 12.75/255.0       # set AWGN noise level for LR image, default: 0
     noise_level_model       = noise_level_img   # set noise level of model, default: 0
-    model_name              = '256x256_diffusion_uncond'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
-    testset_name            = 'demo_test'    # set testing set,  'imagenet_val' | 'ffhq_val'
+    model_name              = 'diffusion_ffhq_10m'  # diffusion_ffhq_10m, 256x256_diffusion_uncond; set diffusino model
+    testset_name            = 'DIV2KRK'    # set testing set,  'imagenet_val' | 'ffhq_val'
     num_train_timesteps     = 1000
     iter_num                = 100                # set number of sampling iterations
     iter_num_U              = 1                 # set number of inner iterations, default: 1
@@ -41,10 +43,10 @@ def main():
     sr_mode                 = 'blur'            # 'blur', 'cubic' mode of sr up/down sampling
 
     show_img                = False             # default: False
-    save_L                  = True              # save LR image
-    save_E                  = False             # save estimated image
+    save_L                  = False             # save LR image
+    save_E                  = True             # save estimated image
     save_LEH                = False             # save zoomed LR, E and H images
-    save_progressive        = True              # save generation process
+    save_progressive        = False              # save generation process
 
     sigma                   = max(0.001,noise_level_img)  # noise level associated with condition y
     lambda_                 = 1.                # key parameter lambda
@@ -98,7 +100,9 @@ def main():
     # L_path, E_path, H_path
     # ----------------------------------------
 
-    L_path = os.path.join(testsets, testset_name) # L_path, for Low-quality images
+    # L_path = os.path.join(testsets, testset_name) # L_path, for Low-quality images
+    L_path = "/mnt/cephfs/home/dengzeshuai/data/sr/DIV2KRK/corruptions/PoissonNoise/X4"
+    H_path = "/mnt/cephfs/home/dengzeshuai/data/sr/DIV2KRK/gt_rename" # L_path, for Low-quality images
     E_path = os.path.join(results, result_name)   # E_path, for Estimated images
     util.mkdir(E_path)
 
@@ -140,8 +144,10 @@ def main():
     logger.info('start step:{}, skip_type:{}, skip interval:{}, skipstep analytic steps:{}'.format(t_start, skip_type, skip, noise_model_t))
     logger.info('analytic iter num:{}, gamma:{}'.format(inIter, gamma))
     logger.info('Model path: {:s}'.format(model_path))
-    logger.info(L_path)
+    logger.info('Low-quality path: {:s}'.format(L_path))
+    logger.info('High-quality path: {:s}'.format(H_path))
     L_paths = util.get_image_paths(L_path)
+    H_paths = util.get_image_paths(H_path)
 
     # --------------------------------
     # load kernel
@@ -181,41 +187,50 @@ def main():
                 test_results['psnr_y'] = []
                 if calc_LPIPS:
                     test_results['lpips'] = []
-                for idx, img in enumerate(L_paths):
+                for idx, (L_img_path, H_img_path) in enumerate(zip(L_paths, H_paths)):
                     model_out_type = model_output_type
 
                     # --------------------------------
                     # (1) get img_L
                     # --------------------------------
 
-                    img_name, ext = os.path.splitext(os.path.basename(img))
-                    img_H = util.imread_uint(img, n_channels=n_channels)
+                    img_name, ext = os.path.splitext(os.path.basename(H_img_path))
+                    img_H = util.imread_uint(H_img_path, n_channels=n_channels)
                     img_H = util.modcrop(img_H, sf)  # modcrop
+                    
+                    assert os.path.basename(H_img_path) == os.path.basename(L_img_path)
+                    img_L = util.imread_uint(L_img_path, n_channels=n_channels)
+                    assert int(img_L.shape[0] * sf) == img_H.shape[0]
+                    assert int(img_L.shape[1] * sf) == img_H.shape[1]
 
-                    if sr_mode == 'blur':
-                        if classical_degradation:
-                            img_L = sr.classical_degradation(img_H, k, sf)
-                            util.imshow(img_L) if show_img else None
-                            img_L = util.uint2single(img_L)
-                        else:
-                            img_L = util.imresize_np(util.uint2single(img_H), 1/sf)
-                    elif sr_mode == 'cubic':
-                        img_H_tensor = np.transpose(img_H, (2, 0, 1))
-                        img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
-                        img_H_tensor = img_H_tensor / 255
-                        # set up resizers
-                        up_sample = partial(F.interpolate, scale_factor=sf)
-                        down_sample = Resizer(img_H_tensor.shape, 1/sf).to(device)
-                        img_L = down_sample(img_H_tensor)
-                        img_L = img_L.cpu().numpy()       #[0,1]
-                        img_L = np.squeeze(img_L)
-                        if img_L.ndim == 3:
-                            img_L = np.transpose(img_L, (1, 2, 0))
+                    # img_H = util.uint2single(img_H)
+                    img_L = util.uint2single(img_L)  
 
-                    np.random.seed(seed=0)  # for reproducibility
-                    img_L = img_L * 2 - 1
-                    img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
-                    img_L = img_L / 2 + 0.5
+                    # if sr_mode == 'blur':
+                    #     if classical_degradation:
+                    #         img_L = sr.classical_degradation(img_H, k, sf)
+                    #         util.imshow(img_L) if show_img else None
+                    #         img_L = util.uint2single(img_L)
+                    #     else:
+                    #         img_L = util.imresize_np(util.uint2single(img_H), 1/sf)
+                    # elif sr_mode == 'cubic':
+                    #     img_H_tensor = np.transpose(img_H, (2, 0, 1))
+                    #     img_H_tensor = torch.from_numpy(img_H_tensor)[None,:,:,:].to(device)
+                    #     img_H_tensor = img_H_tensor / 255
+                    #     # set up resizers
+                    #     up_sample = partial(F.interpolate, scale_factor=sf)
+                    #     down_sample = Resizer(img_H_tensor.shape, 1/sf).to(device)
+                    #     img_L = down_sample(img_H_tensor)
+                    #     img_L = img_L.cpu().numpy()       #[0,1]
+                    #     img_L = np.squeeze(img_L)
+                    #     if img_L.ndim == 3:
+                    #         img_L = np.transpose(img_L, (1, 2, 0))
+
+                    # np.random.seed(seed=0)  # for reproducibility
+                    # img_L = img_L * 2 - 1
+                    # img_L += np.random.normal(0, noise_level_img * 2, img_L.shape) # add AWGN
+                    # img_L = img_L / 2 + 0.5
+
 
                     # --------------------------------
                     # (2) get rhos and sigmas
